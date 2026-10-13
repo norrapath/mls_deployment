@@ -1,8 +1,8 @@
 import argparse
 import os
-import subprocess
 import sys
 
+import ffmpeg  # pip install ffmpeg-python
 import numpy as np
 
 
@@ -19,7 +19,7 @@ def parse_args():
     )
     parser.add_argument("input_file", help="Audio or video file to trim.")
     parser.add_argument(
-        "output_target", 
+        "output_target",
         help="Target output folder OR complete output file path."
     )
     parser.add_argument(
@@ -50,40 +50,21 @@ def parse_args():
 
 
 def get_duration(filename):
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        filename,
-    ]
-
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, check=True)
-    return float(result.stdout.strip())
+    info = ffmpeg.probe(filename)
+    return float(info["format"]["duration"])
 
 
 def load_audio_samples(filename):
-    cmd = [
-        "ffmpeg",
-        "-v",
-        "error",
-        "-i",
-        filename,
-        "-vn",
-        "-ac",
-        "1",
-        "-ar",
-        str(SAMPLE_RATE),
-        "-f",
-        "f32le",
-        "-",
-    ]
-
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-    return np.frombuffer(result.stdout, dtype=np.float32)
+    # `.audio` selects only the audio streams (equivalent to `-vn`).
+    out, _ = (
+        ffmpeg
+        .input(filename)
+        .audio
+        .output("pipe:", format="f32le", acodec="pcm_f32le", ac=1, ar=SAMPLE_RATE)
+        .global_args("-v", "error")
+        .run(capture_stdout=True, capture_stderr=True)
+    )
+    return np.frombuffer(out, dtype=np.float32)
 
 
 def frame_db(samples, frame_seconds):
@@ -149,20 +130,14 @@ def resolve_output_path(input_file, output_target):
 
 def trim_file(input_file, output_file, start, end):
     duration = end - start
-    cmd = [
-        "ffmpeg",
-        "-v",
-        "error",
-        "-y",
-        "-i",
-        input_file,
-        "-ss",
-        f"{start:.3f}",
-        "-t",
-        f"{duration:.3f}",
-        output_file,
-    ]
-    subprocess.run(cmd, check=True)
+    (
+        ffmpeg
+        .input(input_file)
+        .output(output_file, ss=f"{start:.3f}", t=f"{duration:.3f}")
+        .overwrite_output()
+        .global_args("-v", "error")
+        .run(capture_stdout=True, capture_stderr=True)
+    )
 
 
 def main():
@@ -178,6 +153,11 @@ def main():
         )
         output_file = resolve_output_path(args.input_file, args.output_target)
         trim_file(args.input_file, output_file, start, end)
+    except ffmpeg.Error as exc:
+        lines = exc.stderr.decode(errors="replace").strip().splitlines() if exc.stderr else []
+        message = lines[-1] if lines else str(exc)
+        print(f"Error executing trim process (ffmpeg): {message}", file=sys.stderr)
+        sys.exit(1)
     except Exception as exc:
         print(f"Error executing trim process: {exc}", file=sys.stderr)
         sys.exit(1)
