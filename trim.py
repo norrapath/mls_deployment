@@ -1,5 +1,6 @@
 import argparse
 import os
+import shutil
 import sys
 
 import ffmpeg  # pip install ffmpeg-python
@@ -49,9 +50,23 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_duration(filename):
-    info = ffmpeg.probe(filename)
-    return float(info["format"]["duration"])
+def find_ffmpeg():
+    """Use ffmpeg from PATH if present, else the binary bundled with imageio-ffmpeg."""
+    path = shutil.which("ffmpeg")
+    if path:
+        return path
+    try:
+        import imageio_ffmpeg  # pip install imageio-ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except ImportError:
+        raise RuntimeError(
+            "ffmpeg was not found. Install it (e.g. `apt install ffmpeg`, `brew install ffmpeg`) "
+            "or run `pip install imageio-ffmpeg`."
+        )
+
+
+FFMPEG = None  # resolved lazily in main()
 
 
 def load_audio_samples(filename):
@@ -62,7 +77,7 @@ def load_audio_samples(filename):
         .audio
         .output("pipe:", format="f32le", acodec="pcm_f32le", ac=1, ar=SAMPLE_RATE)
         .global_args("-v", "error")
-        .run(capture_stdout=True, capture_stderr=True)
+        .run(cmd=FFMPEG, capture_stdout=True, capture_stderr=True)
     )
     return np.frombuffer(out, dtype=np.float32)
 
@@ -80,8 +95,8 @@ def frame_db(samples, frame_seconds):
 
 
 def detect_voice_bounds(filename, frame_seconds, std_multiplier, padding, min_voice_seconds):
-    duration = get_duration(filename)
     samples = load_audio_samples(filename)
+    duration = len(samples) / SAMPLE_RATE  # decoded audio length (no ffprobe needed)
     db_values = frame_db(samples, frame_seconds)
 
     if db_values.size == 0:
@@ -136,14 +151,16 @@ def trim_file(input_file, output_file, start, end):
         .output(output_file, ss=f"{start:.3f}", t=f"{duration:.3f}")
         .overwrite_output()
         .global_args("-v", "error")
-        .run(capture_stdout=True, capture_stderr=True)
+        .run(cmd=FFMPEG, capture_stdout=True, capture_stderr=True)
     )
 
 
 def main():
+    global FFMPEG
     args = parse_args()
 
     try:
+        FFMPEG = find_ffmpeg()
         start, end, threshold, db_median, db_std = detect_voice_bounds(
             args.input_file,
             args.frame_seconds,
