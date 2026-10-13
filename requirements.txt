@@ -1,5 +1,11 @@
 streamlit
-pandas
-scikit-learn==1.5.2
-joblib
+json
+subprocess
+sys
+uuid
+pathlib
+
+librosa
 numpy
+streamlit
+torch
